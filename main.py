@@ -1,0 +1,255 @@
+import pandas as pd
+import numpy as np
+from multiprocessing import Pool
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import roc_auc_score
+from skmultiflow.drift_detection import DDM
+from utilities import get_dataset, RFModel
+from visualization import draw_bar, draw_cross
+from multiprocessing import Process, Manager
+from tqdm import tqdm
+
+data_folder = "./data"
+datasets = ["AMZN", "credit_fraud", "elec", "noaa", "XLE", "XTN"]
+train_length = [2917, 23139, 24000, 14527, 2917, 2097]
+dataset_lengths = [3647, 28924, 30000, 18159, 3647, 2622]
+# datasets = ["AMZN", "XTN"]
+# train_length = [2917, 2097]
+# dataset_lengths = [3647, 2622]
+# datasets = ["XTN"]
+# dataset_lengths = [2622]
+# train_length = [2097]
+
+relearn_percentage = 0.1
+
+# train calibration test fix 60 10 20 10
+train_ratio = 0.6
+calibration_ratio = 0.1
+test_ratio = 0.2
+last_ratio = 0.1
+continuous_calibration_split = 500
+cross_fold = 2
+
+settings_list = [{"name": "no calibration",
+                  "relearn_percentage": relearn_percentage,
+                  "train_calibration_split": 0.7,
+                  "calibration_method": "sigmoid",
+                  "calibrate": False,
+                  "recalibrate": False,
+                  "retrain": False,
+                  "continuous_calibration": False},
+
+                 {"name": "calibration once",
+                  "relearn_percentage": relearn_percentage,
+                  "train_calibration_split": 0.7,
+                  "calibration_method": "sigmoid",
+                  "calibrate": True,
+                  "recalibrate": False,
+                  "retrain": False,
+                  "continuous_calibration": False},
+
+                 {"name": "retrain only",
+                  "relearn_percentage": relearn_percentage,
+                  "train_calibration_split": 0.7,
+                  "calibration_method": "sigmoid",
+                  "calibrate": True,
+                  "recalibrate": False,
+                  "retrain": True,
+                  "continuous_calibration": False},
+
+                 {"name": "recalibration only",
+                  "relearn_percentage": relearn_percentage,
+                  "train_calibration_split": 0.7,
+                  "calibration_method": "sigmoid",
+                  "calibrate": True,
+                  "recalibrate": True,
+                  "retrain": False,
+                  "continuous_calibration": False},
+
+                 {"name": "retrain recalibration",
+                  "relearn_percentage": relearn_percentage,
+                  "train_calibration_split": 0.7,
+                  "calibration_method": "sigmoid",
+                  "calibrate": True,
+                  "recalibrate": True,
+                  "retrain": True,
+                  "continuous_calibration": False},
+
+                 {"name": "continuous calibration",
+                  "relearn_percentage": relearn_percentage,
+                  "train_calibration_split": 0.7,
+                  "calibration_method": "sigmoid",
+                  "calibrate": True,
+                  "recalibrate": False,
+                  "retrain": False,
+                  "continuous_calibration": True}
+                 ]
+
+total = cross_fold * len(datasets)
+pbar = tqdm(total=total)
+
+
+def run_experiment(settings, results, folder_name):
+    relearn_percentage = settings["relearn_percentage"]
+    # results[settings["name"]] = manager.dict()
+    avg_auc = 0
+    single_result = dict()
+    for data_no, dataset_name in enumerate(datasets):
+        print(f"{settings['name']} - {dataset_name}")
+        x, y = get_dataset(dataset_name)
+        model = RFModel(x=x,
+                        y=y,
+                        train_cal_split=settings["train_calibration_split"],
+                        calibration_method=settings["calibration_method"],
+                        calibrate=settings["calibrate"])
+        model.fit(0, train_length[data_no])
+
+        ddm = DDM()
+        warning_on = False
+        # print(f'start {train_length[data_no]}')
+        predicted_all = []
+        truth_all = []
+        detected_drifts = []
+        for i in range(train_length[data_no], len(x)):
+            predicted_y = model.predict([x[i]])
+            predicted_all.append(model.predict_proba([x[i]])[:, 1])
+            truth_all.append(y[i][0])
+            ddm.add_element(int(predicted_y[0] != y[i][0]))
+
+            if not warning_on and ddm.detected_warning_zone():
+                # print(f'warning {i}')
+                warning_on = True
+
+            if ddm.detected_change():
+                detected_drifts.append(i)
+                # print(f'change {i}')
+                if settings['retrain'] and settings['recalibrate']:
+                    model.fit(int(i * (1 - relearn_percentage)), i)
+                if settings["retrain"]:
+                    model.train(int(i * (1 - relearn_percentage)), i)
+                if settings['recalibrate']:
+                    model.recalibrate(int(i * (1 - relearn_percentage)), i)
+                warning_on = False
+                ddm = DDM()
+
+            if settings["continuous_calibration"]:
+                model.recalibrate(int(i * (1 - relearn_percentage)), i)
+        score = roc_auc_score(truth_all, predicted_all)
+        avg_auc += score
+        single_result[dataset_name] = score
+    single_result["avg"] = avg_auc / len(datasets)
+    results[settings["name"]] = single_result
+
+
+def run_cross_validation(args):
+    settings, results, folder_name = args
+    print(f"{settings['name']} - {datasets[0]}")
+    relearn_percentage = settings["relearn_percentage"]
+    # results[settings["name"]] = manager.dict()
+    single_result = dict()
+    for data_no, dataset_name in enumerate(datasets):
+        x, y = get_dataset(dataset_name)
+        model = RFModel(x=x,
+                        y=y,
+                        train_cal_split=settings["train_calibration_split"],
+                        calibration_method=settings["calibration_method"],
+                        calibrate=settings["calibrate"])
+
+        single_result[dataset_name] = []
+        results[settings["name"]] = single_result
+
+        data_size = len(x)
+        train_size = int(data_size * train_ratio)
+        calibration_size = int(data_size * calibration_ratio)
+        test_start_initial = train_size + calibration_size
+        last_index = int(data_size * (1 - last_ratio))
+        if cross_fold < 1:
+            step = int((last_index - test_start_initial) / cross_fold - 1)
+        else:
+            step = data_size
+        indices = list(range(0, last_index - test_start_initial, step + 1))
+        indices.append(last_index - test_start_initial)
+        for cross_i in indices:
+            train_size = int((test_start_initial + cross_i) * (1 - calibration_ratio / train_ratio))
+            calibration_size = int((test_start_initial + cross_i) * calibration_ratio / train_ratio)
+            test_start = train_size + calibration_size
+            model.train(0, train_size)
+            model.recalibrate(train_size, test_start)
+
+            ddm = DDM()
+            warning_on = False
+            # print(f'start {train_length[data_no]}')
+            predicted_all = []
+            detected_drifts = []
+            detected_warnings = []
+            warning_drift_window = []
+
+            truth_all = np.ravel(y[test_start:len(y)])
+            for i in range(test_start, len(x)):
+                predicted_y = model.predict([x[i]])
+                predicted_all.append(model.predict_proba([x[i]])[:, 1])
+                ddm.add_element(int(predicted_y[0] != y[i][0]))
+
+                if not warning_on and ddm.detected_warning_zone():
+                    # print(f'warning {i}')
+                    warning_on = True
+                    detected_warnings.append(i)
+
+                if ddm.detected_change():
+                    detected_drifts.append(i)
+                    if len(detected_warnings) > 0:
+                        warning_drift_window.append(detected_drifts[-1] - detected_warnings[-1])
+                    # print(f'change {i}')
+                    if settings["retrain"] and settings["recalibrate"]:
+                        retrain_size = int(i * (relearn_percentage * 0.7))
+                        recalibration_size = int(i * (relearn_percentage * 0.3))
+                        model.train(i - retrain_size, i - recalibration_size)
+                        model.recalibrate(i - recalibration_size, i)
+                    else:
+                        if settings["retrain"]:
+                            model.train(int(i * (1 - relearn_percentage)), i)
+                        if settings['recalibrate']:
+                            model.recalibrate(int(i * (1 - relearn_percentage)), i)
+                    warning_on = False
+                    ddm = DDM()
+
+                if settings["continuous_calibration"] and i % continuous_calibration_split:
+                    model.recalibrate(int(i * (1 - relearn_percentage)), i)
+            score = roc_auc_score(truth_all, predicted_all)
+            single_result = results[settings["name"]]
+            single_result[dataset_name].append(score)
+            results[settings["name"]] = single_result
+            pbar.update(1)
+            if data_no + 1 < len(datasets):
+                print(f"{settings['name']} - {datasets[data_no + 1]}")
+
+
+if __name__ == '__main__':
+    folder_name = "cross1"
+    manager = Manager()
+    results = manager.dict()
+    # processes = []
+    # for settings in settings_list:
+    #     proc = Process(target=run_cross_validation, args=(settings, results, folder_name))
+    #     processes.append(proc)
+    #     proc.start()
+    #
+    # for proc in processes:
+    #     proc.join()
+
+    # draw_bar(results, folder_name)
+
+    # total = int(sum(dataset_lengths) * 0.2 / cross_fold)
+    # run_cross_validation((settings_list[4], results, folder_name))
+    # print(results)
+    # results = {'retrain recalibration': {'AMZN': [0.8635061920793332, 0.8776990605267212], 'XTN': [0.8253328175869517, 0.8055102516309413]}}
+    # draw_cross(results, folder_name)
+
+    pool = Pool()
+    args = [(x, results, folder_name) for x in settings_list]
+    pool.imap_unordered(run_cross_validation, args)
+    pool.close()
+    pool.join()
+    pbar.close()
+    print(results)
+    draw_cross(results, folder_name)
