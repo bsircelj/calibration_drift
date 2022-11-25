@@ -13,9 +13,11 @@ data_folder = "./data"
 datasets = ["AMZN", "credit_fraud", "elec", "noaa", "XLE", "XTN"]
 train_length = [2917, 23139, 24000, 14527, 2917, 2097]
 dataset_lengths = [3647, 28924, 30000, 18159, 3647, 2622]
+
 # datasets = ["AMZN", "XTN"]
 # train_length = [2917, 2097]
 # dataset_lengths = [3647, 2622]
+
 # datasets = ["XTN"]
 # dataset_lengths = [2622]
 # train_length = [2097]
@@ -28,7 +30,7 @@ calibration_ratio = 0.1
 test_ratio = 0.2
 last_ratio = 0.1
 continuous_calibration_split = 500
-cross_fold = 2
+cross_fold = 40
 
 settings_list = [{"name": "no calibration",
                   "relearn_percentage": relearn_percentage,
@@ -178,6 +180,7 @@ def run_cross_validation(args):
 
             ddm = DDM()
             warning_on = False
+            retrain_needed = False
             # print(f'start {train_length[data_no]}')
             predicted_all = []
             detected_drifts = []
@@ -185,21 +188,17 @@ def run_cross_validation(args):
             warning_drift_window = []
 
             truth_all = np.ravel(y[test_start:len(y)])
+
             for i in range(test_start, len(x)):
                 predicted_y = model.predict([x[i]])
                 predicted_all.append(model.predict_proba([x[i]])[:, 1])
                 ddm.add_element(int(predicted_y[0] != y[i][0]))
 
                 if not warning_on and ddm.detected_warning_zone():
-                    # print(f'warning {i}')
                     warning_on = True
                     detected_warnings.append(i)
 
-                if ddm.detected_change():
-                    detected_drifts.append(i)
-                    if len(detected_warnings) > 0:
-                        warning_drift_window.append(detected_drifts[-1] - detected_warnings[-1])
-                    # print(f'change {i}')
+                def retrain_recalibrate():
                     if settings["retrain"] and settings["recalibrate"]:
                         retrain_size = int(i * (relearn_percentage * 0.7))
                         recalibration_size = int(i * (relearn_percentage * 0.3))
@@ -210,8 +209,20 @@ def run_cross_validation(args):
                             model.train(int(i * (1 - relearn_percentage)), i)
                         if settings['recalibrate']:
                             model.recalibrate(int(i * (1 - relearn_percentage)), i)
+
+                if ddm.detected_change():
+                    detected_drifts.append(i)
+                    if len(detected_warnings) > 0:
+                        warning_drift_window.append(detected_drifts[-1] - detected_warnings[-1])
+                    retrain_recalibrate()
+                    if i * (1 - relearn_percentage) < detected_warnings[-1]:
+                        retrain_needed = True
                     warning_on = False
                     ddm = DDM()
+
+                if retrain_needed and i * (1 - relearn_percentage) > detected_warnings[-1]:
+                    retrain_needed = False
+                    retrain_recalibrate()
 
                 if settings["continuous_calibration"] and i % continuous_calibration_split:
                     model.recalibrate(int(i * (1 - relearn_percentage)), i)
@@ -219,13 +230,17 @@ def run_cross_validation(args):
             single_result = results[settings["name"]]
             single_result[dataset_name].append(score)
             results[settings["name"]] = single_result
+            mean_window = 0
+            if len(warning_drift_window) > 0:
+                mean_window = int(np.average(warning_drift_window))
+            print(f"{settings['name']} - {dataset_name} drifts: {len(detected_drifts)} window: {mean_window}")
             pbar.update(1)
             if data_no + 1 < len(datasets):
                 print(f"{settings['name']} - {datasets[data_no + 1]}")
 
 
 if __name__ == '__main__':
-    folder_name = "cross1"
+    folder_name = "cross_full_run"
     manager = Manager()
     results = manager.dict()
     # processes = []
@@ -252,4 +267,6 @@ if __name__ == '__main__':
     pool.join()
     pbar.close()
     print(results)
+
     draw_cross(results, folder_name)
+

@@ -1,6 +1,7 @@
 import plotly.graph_objects as go
 import os
 import numpy as np
+import json
 
 base_figure_folder = "./charts"
 
@@ -52,6 +53,9 @@ def draw_cross(results, folder_name):
     folder = f'{base_figure_folder}/{folder_name}'
     if not os.path.exists(folder):
         os.makedirs(folder)
+
+    with open(f'{folder}/results.json', 'w') as file:
+        file.write(json.dumps(results.copy()))
 
     global_figure = go.Figure()
 
