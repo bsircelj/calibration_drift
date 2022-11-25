@@ -255,18 +255,18 @@ if __name__ == '__main__':
     # draw_bar(results, folder_name)
 
     # total = int(sum(dataset_lengths) * 0.2 / cross_fold)
-    # run_cross_validation((settings_list[4], results, folder_name))
+    run_cross_validation((settings_list[4], results, folder_name))
     # print(results)
     # results = {'retrain recalibration': {'AMZN': [0.8635061920793332, 0.8776990605267212], 'XTN': [0.8253328175869517, 0.8055102516309413]}}
     # draw_cross(results, folder_name)
 
-    pool = Pool()
-    args = [(x, results, folder_name) for x in settings_list]
-    pool.imap_unordered(run_cross_validation, args)
-    pool.close()
-    pool.join()
-    pbar.close()
-    print(results)
-
-    draw_cross(results, folder_name)
+    # pool = Pool()
+    # args = [(x, results, folder_name) for x in settings_list]
+    # pool.imap_unordered(run_cross_validation, args)
+    # pool.close()
+    # pool.join()
+    # pbar.close()
+    # print(results)
+    #
+    # draw_cross(results, folder_name)
 
