@@ -8,6 +8,7 @@ from utilities import get_dataset, RFModel
 from visualization import draw_bar, draw_cross
 from multiprocessing import Process, Manager
 from tqdm import tqdm
+import os
 
 data_folder = "./data"
 datasets = ["AMZN", "credit_fraud", "elec", "noaa", "XLE", "XTN"]
@@ -30,7 +31,7 @@ calibration_ratio = 0.1
 test_ratio = 0.2
 last_ratio = 0.1
 continuous_calibration_split = 500
-cross_fold = 40
+cross_fold = 30
 
 settings_list = [{"name": "no calibration",
                   "relearn_percentage": relearn_percentage,
@@ -145,103 +146,109 @@ def run_experiment(settings, results, folder_name):
 
 def run_cross_validation(args):
     settings, results, folder_name = args
-    print(f"{settings['name']} - {datasets[0]}")
-    relearn_percentage = settings["relearn_percentage"]
-    # results[settings["name"]] = manager.dict()
-    single_result = dict()
-    for data_no, dataset_name in enumerate(datasets):
-        x, y = get_dataset(dataset_name)
-        model = RFModel(x=x,
-                        y=y,
-                        train_cal_split=settings["train_calibration_split"],
-                        calibration_method=settings["calibration_method"],
-                        calibrate=settings["calibrate"])
+    os.makedirs(f'{data_folder}/{folder_name}/logs')
+    with open(f'{data_folder}/{folder_name}/logs/{settings["name"]}.log', 'a') as logfile:
+        print(f"{settings['name']} - {datasets[0]}")
+        logfile.write(f"{settings['name']} - {datasets[0]} \n")
+        relearn_percentage = settings["relearn_percentage"]
+        # results[settings["name"]] = manager.dict()
+        single_result = dict()
+        for data_no, dataset_name in enumerate(datasets):
+            x, y = get_dataset(dataset_name)
+            model = RFModel(x=x,
+                            y=y,
+                            train_cal_split=settings["train_calibration_split"],
+                            calibration_method=settings["calibration_method"],
+                            calibrate=settings["calibrate"])
 
-        single_result[dataset_name] = []
-        results[settings["name"]] = single_result
-
-        data_size = len(x)
-        train_size = int(data_size * train_ratio)
-        calibration_size = int(data_size * calibration_ratio)
-        test_start_initial = train_size + calibration_size
-        last_index = int(data_size * (1 - last_ratio))
-        if cross_fold < 1:
-            step = int((last_index - test_start_initial) / cross_fold - 1)
-        else:
-            step = data_size
-        indices = list(range(0, last_index - test_start_initial, step + 1))
-        indices.append(last_index - test_start_initial)
-        for cross_i in indices:
-            train_size = int((test_start_initial + cross_i) * (1 - calibration_ratio / train_ratio))
-            calibration_size = int((test_start_initial + cross_i) * calibration_ratio / train_ratio)
-            test_start = train_size + calibration_size
-            model.train(0, train_size)
-            model.recalibrate(train_size, test_start)
-
-            ddm = DDM()
-            warning_on = False
-            retrain_needed = False
-            # print(f'start {train_length[data_no]}')
-            predicted_all = []
-            detected_drifts = []
-            detected_warnings = []
-            warning_drift_window = []
-
-            truth_all = np.ravel(y[test_start:len(y)])
-
-            for i in range(test_start, len(x)):
-                predicted_y = model.predict([x[i]])
-                predicted_all.append(model.predict_proba([x[i]])[:, 1])
-                ddm.add_element(int(predicted_y[0] != y[i][0]))
-
-                if not warning_on and ddm.detected_warning_zone():
-                    warning_on = True
-                    detected_warnings.append(i)
-
-                def retrain_recalibrate():
-                    if settings["retrain"] and settings["recalibrate"]:
-                        retrain_size = int(i * (relearn_percentage * 0.7))
-                        recalibration_size = int(i * (relearn_percentage * 0.3))
-                        model.train(i - retrain_size, i - recalibration_size)
-                        model.recalibrate(i - recalibration_size, i)
-                    else:
-                        if settings["retrain"]:
-                            model.train(int(i * (1 - relearn_percentage)), i)
-                        if settings['recalibrate']:
-                            model.recalibrate(int(i * (1 - relearn_percentage)), i)
-
-                if ddm.detected_change():
-                    detected_drifts.append(i)
-                    if len(detected_warnings) > 0:
-                        warning_drift_window.append(detected_drifts[-1] - detected_warnings[-1])
-                    retrain_recalibrate()
-                    if len(detected_warnings) > 0 and i * (1 - relearn_percentage) < detected_warnings[-1]:
-                        retrain_needed = True
-                    warning_on = False
-                    ddm = DDM()
-
-                if retrain_needed and len(detected_warnings) > 0 and i * (1 - relearn_percentage) > detected_warnings[
-                    -1]:
-                    retrain_needed = False
-                    retrain_recalibrate()
-
-                if settings["continuous_calibration"] and i % continuous_calibration_split:
-                    model.recalibrate(int(i * (1 - relearn_percentage)), i)
-            score = roc_auc_score(truth_all, predicted_all)
-            single_result = results[settings["name"]]
-            single_result[dataset_name].append(score)
+            single_result[dataset_name] = []
             results[settings["name"]] = single_result
-            mean_window = 0
-            if len(warning_drift_window) > 0:
-                mean_window = int(np.average(warning_drift_window))
-            print(f"{settings['name']} - {dataset_name} drifts: {len(detected_drifts)} window: {mean_window}")
-            pbar.update(1)
-            if data_no + 1 < len(datasets):
-                print(f"{settings['name']} - {datasets[data_no + 1]}")
+
+            data_size = len(x)
+            train_size = int(data_size * train_ratio)
+            calibration_size = int(data_size * calibration_ratio)
+            test_start_initial = train_size + calibration_size
+            last_index = int(data_size * (1 - last_ratio))
+            step = data_size
+            if cross_fold > 1:
+                step = int((last_index - test_start_initial) / cross_fold - 1)
+            indices = list(range(0, last_index - test_start_initial, step + 1))
+            indices.append(last_index - test_start_initial)
+            for cross_i in indices:
+                train_size = int((test_start_initial + cross_i) * (1 - calibration_ratio / train_ratio))
+                calibration_size = int((test_start_initial + cross_i) * calibration_ratio / train_ratio)
+                test_start = train_size + calibration_size
+                model.train(0, train_size)
+                model.recalibrate(train_size, test_start)
+
+                ddm = DDM()
+                warning_on = False
+                retrain_needed = False
+                # print(f'start {train_length[data_no]}')
+                predicted_all = []
+                detected_drifts = []
+                detected_warnings = []
+                warning_drift_window = []
+
+                truth_all = np.ravel(y[test_start:len(y)])
+
+                for i in range(test_start, len(x)):
+                    predicted_y = model.predict([x[i]])
+                    predicted_all.append(model.predict_proba([x[i]])[:, 1])
+                    ddm.add_element(int(predicted_y[0] != y[i][0]))
+
+                    if not warning_on and ddm.detected_warning_zone():
+                        warning_on = True
+                        detected_warnings.append(i)
+
+                    def retrain_recalibrate():
+                        if settings["retrain"] and settings["recalibrate"]:
+                            retrain_size = int(i * (relearn_percentage * 0.7))
+                            recalibration_size = int(i * (relearn_percentage * 0.3))
+                            model.train(i - retrain_size, i - recalibration_size)
+                            model.recalibrate(i - recalibration_size, i)
+                        else:
+                            if settings["retrain"]:
+                                model.train(int(i * (1 - relearn_percentage)), i)
+                            if settings['recalibrate']:
+                                model.recalibrate(int(i * (1 - relearn_percentage)), i)
+
+                    if ddm.detected_change():
+                        detected_drifts.append(i)
+                        if len(detected_warnings) > 0:
+                            warning_drift_window.append(detected_drifts[-1] - detected_warnings[-1])
+                        retrain_recalibrate()
+                        if len(detected_warnings) > 0 and i * (1 - relearn_percentage) < detected_warnings[-1]:
+                            retrain_needed = True
+                        warning_on = False
+                        ddm = DDM()
+
+                    if retrain_needed and len(detected_warnings) > 0 and i * (1 - relearn_percentage) > \
+                            detected_warnings[
+                                -1]:
+                        retrain_needed = False
+                        retrain_recalibrate()
+
+                    if settings["continuous_calibration"] and i % continuous_calibration_split:
+                        model.recalibrate(int(i * (1 - relearn_percentage)), i)
+                score = roc_auc_score(truth_all, predicted_all)
+                single_result = results[settings["name"]]
+                single_result[dataset_name].append(score)
+                results[settings["name"]] = single_result
+                mean_window = 0
+                if len(warning_drift_window) > 0:
+                    mean_window = int(np.average(warning_drift_window))
+                print(f"{settings['name']} - {dataset_name} drifts: {len(detected_drifts)} window: {mean_window}")
+                logfile.write(
+                    f"{settings['name']} - {dataset_name} drifts: {len(detected_drifts)} window: {mean_window}\n")
+                pbar.update(1)
+                if data_no + 1 < len(datasets):
+                    print(f"{settings['name']} - {datasets[data_no + 1]}")
+                    logfile.write(f"{settings['name']} - {datasets[data_no + 1]}\n")
 
 
 if __name__ == '__main__':
-    folder_name = "cross_full_run"
+    folder_name = "cross_full_run2"
     manager = Manager()
     results = manager.dict()
     # processes = []
