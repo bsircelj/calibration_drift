@@ -146,8 +146,8 @@ def run_experiment(settings, results, folder_name):
 
 def run_cross_validation(args):
     settings, results, folder_name = args
-    os.makedirs(f'{data_folder}/{folder_name}/logs')
-    with open(f'{data_folder}/{folder_name}/logs/{settings["name"]}.log', 'a') as logfile:
+    os.makedirs(f'./charts/{folder_name}/logs')
+    with open(f'./charts/{folder_name}/logs/{settings["name"].replace(" ", "_")}.log', 'a') as logfile:
         print(f"{settings['name']} - {datasets[0]}")
         logfile.write(f"{settings['name']} - {datasets[0]} \n")
         relearn_percentage = settings["relearn_percentage"]
@@ -248,7 +248,7 @@ def run_cross_validation(args):
 
 
 if __name__ == '__main__':
-    folder_name = "cross_full_run2"
+    folder_name = "cross_full_run3"
     manager = Manager()
     results = manager.dict()
     # processes = []
