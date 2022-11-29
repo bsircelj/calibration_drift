@@ -256,7 +256,7 @@ def run_cross_validation(args):
 
 
 if __name__ == '__main__':
-    folder_name = "cross_full_run_test"
+    folder_name = "cross_full_run5"
     manager = Manager()
     results_auc = manager.dict()
     logs = manager.dict()
