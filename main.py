@@ -5,7 +5,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
 from skmultiflow.drift_detection import DDM
 from utilities import get_dataset, RFModel
-from visualization import draw_bar, draw_cross
+from visualization import draw_bar, draw_cross, draw_drifts
 from multiprocessing import Process, Manager
 from tqdm import tqdm
 import os
@@ -20,9 +20,9 @@ dataset_lengths = [3647, 28924, 30000, 18159, 3647, 2622]
 # train_length = [2917, 2097]
 # dataset_lengths = [3647, 2622]
 
-# datasets = ["XTN"]
-# dataset_lengths = [2622]
-# train_length = [2097]
+datasets = ["XTN"]
+dataset_lengths = [2622]
+train_length = [2097]
 
 relearn_percentage = 0.1
 
@@ -32,7 +32,7 @@ calibration_ratio = 0.1
 test_ratio = 0.2
 last_ratio = 0.1
 continuous_calibration_split = 500
-cross_fold = 30
+cross_fold = 2
 
 settings_list = [{"name": "no calibration",
                   "relearn_percentage": relearn_percentage,
@@ -156,7 +156,6 @@ def run_cross_validation(args):
     # results[settings["name"]] = manager.dict()
     single_result_auc = dict()
     single_result_proba = dict()
-    results_proba[settings["name"]] = single_result_proba
     for data_no, dataset_name in enumerate(datasets):
         x, y = get_dataset(dataset_name)
         model = RFModel(x=x,
@@ -167,6 +166,8 @@ def run_cross_validation(args):
 
         single_result_auc[dataset_name] = []
         results[settings["name"]] = single_result_auc
+        single_result_proba[dataset_name] = dict()
+        results_proba[settings["name"]] = single_result_proba
 
         data_size = len(x)
         train_size = int(data_size * train_ratio)
@@ -237,7 +238,13 @@ def run_cross_validation(args):
                     model.recalibrate(int(i * (1 - relearn_percentage)), i)
 
             single_result_proba = results_proba[settings["name"]]
-            single_result_proba[cross_no] = ([int(x) for x in list(truth_all)], [float(x[0]) for x in predicted_all])
+            subdict = {"start": test_start,
+                       "end": len(x),
+                       "truth": [int(x) for x in list(truth_all)],
+                       "predicted": [float(x[0]) for x in predicted_all],
+                       "warnings": detected_warnings,
+                       "drifts": detected_drifts}
+            single_result_proba[dataset_name][cross_no] = subdict
             results_proba[settings["name"]] = single_result_proba
 
             score = roc_auc_score(truth_all, predicted_all)
@@ -256,7 +263,7 @@ def run_cross_validation(args):
 
 
 if __name__ == '__main__':
-    folder_name = "cross_full_run5"
+    folder_name = "cross_full_drift_visualization1"
     manager = Manager()
     results_auc = manager.dict()
     logs = manager.dict()
@@ -295,3 +302,4 @@ if __name__ == '__main__':
         for experiment_name in logs:
             file.write(f"\n___\n{experiment_name}\n___\n")
             file.write(logs[experiment_name])
+    # draw_drifts(results_proba)

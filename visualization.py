@@ -72,10 +72,34 @@ def draw_cross(results, folder_name):
                 avg_array = [sum(x) for x in zip(avg_array, results[experiment_name][use_case])]
         use_case_no = len(results[experiment_name])
         avg_array = [x / use_case_no for x in avg_array]
-        global_figure.add_trace(go.Scatter(x=np.arange(len(avg_array)), y=avg_array, mode='lines', name=experiment_name))
+        global_figure.add_trace(
+            go.Scatter(x=np.arange(len(avg_array)), y=avg_array, mode='lines', name=experiment_name))
         fig.add_trace(go.Scatter(x=np.arange(len(avg_array)), y=avg_array, mode='lines', name="avg"))
 
         fig.update_layout(title=experiment_name)
         fig.write_html(f'{folder}/{experiment_name}.html')
     global_figure.update_layout(title="all_averages")
     global_figure.write_html(f'{folder}/all_averages.html')
+
+
+def draw_drifts(results_proba):
+    for experiment_name in results_proba:
+        folder = f'{base_figure_folder}/{experiment_name}'
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+        for use_case in results_proba[experiment_name]:
+            fig = go.Figure()
+            drift_x = []
+            drift_y = []
+            warning_x = []
+            warning_y = []
+            for cross_no in results_proba[experiment_name][use_case]:
+                for drift in results_proba[experiment_name][use_case][cross_no]["drifts"]:
+                    drift_x.append(cross_no)
+                    drift_y.append(drift)
+                for warning in results_proba[experiment_name][use_case][cross_no]["warnings"]:
+                    warning_x.append(cross_no)
+                    warning_y.append(warning)
+            fig.add_trace(go.Scatter(x=warning_x, y=warning_y, mode='markers', name="warning", color="orange"))
+            fig.add_trace(go.Scatter(x=drift_x, y=drift_y, mode='markers', name="drift", color="red"))
+            fig.write_html(f'{folder}/{use_case}.html')
